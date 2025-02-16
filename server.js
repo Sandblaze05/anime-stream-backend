@@ -89,7 +89,7 @@ app.get("/stream/:fileName", (req, res) => {
   stream.pipe(res);
 
   stream.on("error", (err) => {
-    console.error("Stream error:", err.message);
+    console.log("Stream error:", err.message);
 
     // Prevent sending response after headers are sent
     if (!res.headersSent) {
