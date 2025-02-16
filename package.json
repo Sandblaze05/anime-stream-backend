@@ -16,6 +16,7 @@
     "fs": "^0.0.1-security",
     "path": "^0.12.7",
     "test_env": "file:",
-    "webtorrent": "^2.5.19"
+    "webtorrent": "^2.5.19",
+    "webtorrent-hybrid": "^6.0.0"
   }
 }
