@@ -81,15 +81,13 @@ app.get("/add/:magnet", (req, res) => {
         console.error(`Torrent error for ${infoHash}:`, err.message);
         
         if (client.get(infoHash)) {
-          console.log(`Destroying faulty torrent: ${infoHash}`);
-          torrent.destroy({ destroyStore: true });
-          activeTorrents.delete(infoHash);
+          safeDestroyTorrent(torrent, infoHash);
         }
-
+      
         // Only retry if under max attempts and client is still connected
         if (retryCount < MAX_RETRIES && !res.headersSent) {
           console.log(`Retrying torrent: ${infoHash} (Attempt ${retryCount + 1}/${MAX_RETRIES})`);
-          setTimeout(createTorrent, RETRY_DELAY * (retryCount + 1)); // Exponential backoff
+          setTimeout(createTorrent, RETRY_DELAY * (retryCount + 1));
         } else if (!res.headersSent) {
           res.status(500).json({ error: "Failed to add torrent" });
         }
@@ -217,9 +215,46 @@ function handleStream(stream, torrent, infoHash, fileName, res, req) {
     console.log(`Client disconnected from ${fileName}`);
     stream.destroy();
     decrementActiveStreams(infoHash);
+    
+    // If this was the last stream, schedule cleanup
+    const activeCount = activeStreams.get(infoHash) || 0;
+    if (activeCount === 0) {
+      scheduleTorrentCleanup(infoHash);
+    }
   });
 
   stream.pipe(res);
+}
+
+// Helper function to safely destroy a torrent
+function safeDestroyTorrent(torrent, infoHash) {
+  try {
+    if (!torrent) {
+      console.log(`No torrent found for ${infoHash}`);
+      return;
+    }
+
+    // Check if it's a valid WebTorrent instance
+    if (typeof torrent.destroy === 'function') {
+      console.log(`Destroying torrent ${infoHash}`);
+      torrent.destroy({ destroyStore: true });
+    } else {
+      console.log(`Invalid torrent instance for ${infoHash}, cleaning up references`);
+      // Clean up our references even if we can't destroy
+      client.remove(infoHash);
+    }
+
+    // Clean up our maps
+    activeTorrents.delete(infoHash);
+    activeStreams.delete(infoHash);
+    torrentRetries.delete(infoHash);
+  } catch (error) {
+    console.error(`Error destroying torrent ${infoHash}:`, error.message);
+    // Still try to clean up references
+    activeTorrents.delete(infoHash);
+    activeStreams.delete(infoHash);
+    torrentRetries.delete(infoHash);
+  }
 }
 
 function incrementActiveStreams(infoHash) {
@@ -240,10 +275,7 @@ function scheduleTorrentCleanup(infoHash) {
     if (activeCount === 0) {
       const torrent = client.get(infoHash);
       if (torrent) {
-        console.log(`Cleaning up inactive torrent: ${infoHash}`);
-        torrent.destroy({ destroyStore: true });
-        activeTorrents.delete(infoHash);
-        activeStreams.delete(infoHash);
+        safeDestroyTorrent(torrent, infoHash);
       }
     }
   }, CLEANUP_DELAY);
@@ -251,8 +283,17 @@ function scheduleTorrentCleanup(infoHash) {
 
 process.on('SIGINT', () => {
   console.log('Cleaning up torrents before exit...');
-  client.destroy(() => {
-    console.log('Torrents cleaned up. Exiting...');
+  
+  // Safely destroy all torrents
+  const cleanupPromises = Array.from(activeTorrents.entries()).map(([infoHash, torrent]) => {
+    return new Promise((resolve) => {
+      safeDestroyTorrent(torrent, infoHash);
+      resolve();
+    });
+  });
+
+  Promise.all(cleanupPromises).then(() => {
+    console.log('All torrents cleaned up. Exiting...');
     process.exit();
   });
 });
